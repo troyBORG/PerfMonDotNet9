@@ -2,6 +2,7 @@
 bin/
 obj/
 out/
+dist/
 *.pdb
 *.mdb
 *.log
