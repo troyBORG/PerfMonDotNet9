@@ -1,0 +1,2 @@
+T:\git\perf_mon_server\PerfMonDotNet9\out\PerfMonDotNet9.pdb
+T:\git\perf_mon_server\PerfMonDotNet9\out\PerfMonDotNet9
