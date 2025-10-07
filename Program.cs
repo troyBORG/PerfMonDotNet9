@@ -275,20 +275,17 @@ internal static class Program
         }
     }
 
-    // Windows: true max per-core via PerformanceCounter
+    // Windows: true max per-core via PerformanceCounter (compile only for net9.0-windows)
+    #if WINDOWS
     private static async Task<double> SampleWindowsMaxCorePercentAsync(TimeSpan sample, double fallbackOverall)
     {
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            return fallbackOverall;
-
         try
         {
             var cat = new System.Diagnostics.PerformanceCounterCategory("Processor");
             var instances = cat.GetInstanceNames()
-                               .Where(n => !string.Equals(n, "_Total", StringComparison.OrdinalIgnoreCase))
-                               .ToArray();
-            if (instances.Length == 0)
-                return fallbackOverall;
+                            .Where(n => !string.Equals(n, "_Total", StringComparison.OrdinalIgnoreCase))
+                            .ToArray();
+            if (instances.Length == 0) return fallbackOverall;
 
             var counters = new List<System.Diagnostics.PerformanceCounter>(instances.Length);
             try
@@ -306,9 +303,7 @@ internal static class Program
                     var v = c.NextValue();
                     if (v > max) max = v;
                 }
-                if (max < 0) max = 0;
-                if (max > 100) max = 100;
-                return max;
+                return Math.Clamp(max, 0, 100);
             }
             finally
             {
@@ -320,6 +315,12 @@ internal static class Program
             return fallbackOverall;
         }
     }
+    #else
+    // Non-Windows builds (e.g., net9.0 for Linux) never touch PerformanceCounter
+    private static Task<double> SampleWindowsMaxCorePercentAsync(TimeSpan sample, double fallbackOverall)
+        => Task.FromResult(fallbackOverall);
+    #endif
+
 
     private struct CpuLine
     {

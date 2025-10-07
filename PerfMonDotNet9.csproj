@@ -1,11 +1,17 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
-    <TargetFramework>net9.0-windows</TargetFramework>
+    <TargetFrameworks>net9.0;net9.0-windows</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
   </PropertyGroup>
-  <ItemGroup>
-    <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="9.0.9" />
+
+  <!-- Only Windows build defines WINDOWS and includes the perf counter package -->
+  <PropertyGroup Condition="'$(TargetFramework)'=='net9.0-windows'">
+    <DefineConstants>$(DefineConstants);WINDOWS</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)'=='net9.0-windows'">
+    <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="9.0.0" />
   </ItemGroup>
 </Project>
