@@ -36,3 +36,6 @@ coverage/
 *.coverage
 *.coveragexml
 TestResult*/
+
+#Build_Script
+build_release.ps1
