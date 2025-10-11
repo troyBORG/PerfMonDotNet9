@@ -1,4 +1,4 @@
-// Program.cs — .NET 9 drop-in for perf_mon_server.py
+﻿// Program.cs — .NET 9 drop-in for perf_mon_server.py
 // Endpoints: / -> /index.html, /index.html, /reset-counters, /perf-stats
 // CSV: cpu_percent, core_percent, mem_total, mem_avail,
 //      total_bytes_sent, total_bytes_received, bytes/sec sent, bytes/sec received
@@ -6,9 +6,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.NetworkInformation;
-using System.Net.Sockets;
 using System.Runtime.InteropServices;
-using System.Linq;
 
 namespace PerfMonDotNet9;
 
@@ -21,14 +19,8 @@ internal static class Program
     private static long _prevBytesRecv;
     private static DateTime _prevTime = DateTime.UtcNow;
 
-    // Optional: filter CPU/core to specific processes (e.g., --procs "Resonite;Renderite.Host;Renderite.Renderer")
-    private static string[] _procFilters = Array.Empty<string>();
-
     public static async Task Main(string[] args)
     {
-        // Parse optional process filters
-        _procFilters = ParseListArg(args, "--procs", "-p");
-
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = args });
         builder.WebHost.UseKestrel(opt => opt.Listen(IPAddress.Any, 8082));
         var app = builder.Build();
@@ -72,28 +64,18 @@ internal static class Program
         {
             var sample = TimeSpan.FromSeconds(1);
 
-            // CPU%
-            double cpuPercent;
-            double corePercent;
-            if (_procFilters.Length == 0)
-            {
-                // system-wide
-                cpuPercent  = await SampleSystemCpuPercentAsync(sample);
-                corePercent = RuntimeInformation.IsOSPlatform(OSPlatform.Linux)
-                    ? await SampleLinuxMaxCorePercentAsync(sample)
-                    : await SampleWindowsMaxCorePercentAsync(sample, cpuPercent);
-            }
-            else
-            {
-                // filtered: sum CPU% over matching processes; core ~= sum capped at 100
-                cpuPercent  = await SampleFilteredCpuPercentAsync(sample, _procFilters);
-                corePercent = cpuPercent > 100 ? 100 : (cpuPercent < 0 ? 0 : cpuPercent);
-            }
+            // overall CPU%
+            double cpuPercent = await SampleSystemCpuPercentAsync(sample);
 
-            // memory totals (system)
+            // max per-core (Linux true; Windows true via PerformanceCounter)
+            double corePercent = RuntimeInformation.IsOSPlatform(OSPlatform.Linux)
+                ? await SampleLinuxMaxCorePercentAsync(sample)
+                : await SampleWindowsMaxCorePercentAsync(sample, cpuPercent);
+
+            // memory totals
             var (memTotalBytes, memAvailBytes) = GetSystemMemoryBytes();
 
-            // network totals since reset (system; selecting primary, non-virtual NICs)
+            // network totals since reset
             long totalSentSinceStart = GetSystemBytesSent() - _initialBytesSent;
             long totalRecvSinceStart = GetSystemBytesRecv() - _initialBytesRecv;
 
@@ -137,7 +119,8 @@ internal static class Program
         long sum = 0;
         foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
         {
-            if (!IncludeNic(ni)) continue;
+            if (ni.OperationalStatus != OperationalStatus.Up) continue;
+            if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
             try { sum += ni.GetIPv4Statistics().BytesSent; } catch { }
         }
         return sum;
@@ -148,40 +131,11 @@ internal static class Program
         long sum = 0;
         foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
         {
-            if (!IncludeNic(ni)) continue;
+            if (ni.OperationalStatus != OperationalStatus.Up) continue;
+            if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
             try { sum += ni.GetIPv4Statistics().BytesReceived; } catch { }
         }
         return sum;
-    }
-
-    // Prefer real/primary NICs: up, not loopback, not virtual/filter, has IPv4 default gateway
-    private static bool IncludeNic(NetworkInterface ni)
-    {
-        if (ni == null) return false;
-        if (ni.OperationalStatus != OperationalStatus.Up) return false;
-        if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) return false;
-
-        var s = ((ni.Name ?? "") + " " + (ni.Description ?? "")).ToLowerInvariant();
-        string[] bad = {
-            "virtual", "vmware", "hyper-v", "vethernet", "switch", "host-only",
-            "npcap", "tailscale", "bridge", "bluetooth", "wireguard", "wg ", "zerotier",
-            "virtualbox", "pppoe", "teredo", "ip-https", "6to4", "wan miniport",
-            "ndis", "filter", "qos", "network monitor", "kernel debug", "xbox"
-        };
-        foreach (var m in bad) if (s.Contains(m)) return false;
-
-        try
-        {
-            var props = ni.GetIPProperties();
-            foreach (var gw in props.GatewayAddresses)
-            {
-                if (gw?.Address != null && gw.Address.AddressFamily == AddressFamily.InterNetwork)
-                    return true;
-            }
-        }
-        catch { }
-
-        return false;
     }
 
     private static (long total, long available) GetSystemMemoryBytes()
@@ -255,85 +209,6 @@ internal static class Program
         }
 
         static double Clamp01(double v) => v < 0 ? 0 : (v > 100 ? 100 : v);
-    }
-
-    // filtered CPU%: sum of matching processes over the sample window
-    private static async Task<double> SampleFilteredCpuPercentAsync(TimeSpan sample, string[] filters)
-    {
-        var t0 = new Dictionary<int, TimeSpan>();
-
-        foreach (var p in GetMatchingProcesses(filters))
-        {
-            try { t0[p.Id] = p.TotalProcessorTime; }
-            catch { }
-            finally { try { p.Dispose(); } catch { } }
-        }
-
-        await Task.Delay(sample);
-
-        int logical = Math.Max(1, Environment.ProcessorCount);
-        double sum = 0;
-
-        foreach (var p in GetMatchingProcesses(filters))
-        {
-            try
-            {
-                var pid = p.Id;
-                if (!t0.TryGetValue(pid, out var a)) continue;
-                var b = p.TotalProcessorTime;
-
-                double cpuPct = 0;
-                if (b > a && sample.TotalSeconds > 0)
-                {
-                    cpuPct = (b - a).TotalSeconds / (sample.TotalSeconds * logical) * 100.0;
-                    cpuPct = Math.Clamp(cpuPct, 0, 100);
-                }
-                sum += cpuPct;
-            }
-            catch { }
-            finally { try { p.Dispose(); } catch { } }
-        }
-
-        return sum;
-    }
-
-    private static IEnumerable<Process> GetMatchingProcesses(string[] filters)
-    {
-        var all = Process.GetProcesses();
-        if (filters is null || filters.Length == 0) return all;
-
-        return all.Where(p =>
-        {
-            try
-            {
-                var n = p.ProcessName;
-                foreach (var f in filters)
-                {
-                    if (n.Equals(f, StringComparison.OrdinalIgnoreCase)) return true;
-                    if (n.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) &&
-                        n.AsSpan(0, n.Length - 4).Equals(f.AsSpan(), StringComparison.OrdinalIgnoreCase)) return true;
-                    if (n.Contains(f, StringComparison.OrdinalIgnoreCase)) return true;
-
-                    if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-                    {
-                        // Linux: match cmdline substring (e.g., "dotnet Resonite.dll")
-                        try
-                        {
-                            var bytes = File.ReadAllBytes($"/proc/{p.Id}/cmdline");
-                            if (bytes.Length > 0)
-                            {
-                                var parts = System.Text.Encoding.UTF8.GetString(bytes).Split('\0', StringSplitOptions.RemoveEmptyEntries);
-                                var cmd = string.Join(' ', parts);
-                                if (!string.IsNullOrEmpty(cmd) && cmd.IndexOf(f, StringComparison.OrdinalIgnoreCase) >= 0) return true;
-                            }
-                        }
-                        catch { }
-                    }
-                }
-                return false;
-            }
-            catch { return false; }
-        }).ToArray();
     }
 
     // Linux: true max per-core via /proc/stat
@@ -472,32 +347,5 @@ internal static class Program
 
         [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
         internal static extern bool GlobalMemoryStatusEx([In, Out] MEMORYSTATUSEX lpBuffer);
-    }
-
-    // small arg helper (kept local for minimal diff)
-    private static string[] ParseListArg(string[] args, params string[] keys)
-    {
-        if (args == null || args.Length == 0) return Array.Empty<string>();
-        for (int i = 0; i < args.Length; i++)
-        {
-            foreach (var k in keys)
-            {
-                if (args[i].Equals(k, StringComparison.OrdinalIgnoreCase))
-                {
-                    if (i + 1 < args.Length && !args[i + 1].StartsWith("--"))
-                        return SplitList(args[i + 1]);
-                    return Array.Empty<string>();
-                }
-                if (args[i].StartsWith(k + "=", StringComparison.OrdinalIgnoreCase))
-                    return SplitList(args[i].Substring(k.Length + 1));
-            }
-        }
-        return Array.Empty<string>();
-
-        static string[] SplitList(string s)
-            => s.Split(new[] { ';', ',', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                .Select(x => x.Trim())
-                .Where(x => x.Length > 0)
-                .ToArray();
     }
 }
