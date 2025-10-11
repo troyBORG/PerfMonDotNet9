@@ -5,7 +5,7 @@
 //
 // Behavior:
 // - No args: system-wide CPU% and core% (true per-core max on each OS), memory, and network.
-// - With --procs "A;B;C": CPU% is the sum of those processes; core% = min(100, sum).
+// - With --procs "A;B;C": CPU% is the sum of those processes; core% ~= sum * logical_cores (capped at 100).
 //   Memory and network stay system-wide. Endpoint/CSV unchanged.
 //
 // Also provides / (redirect to /index.html), /index.html (optional), /reset-counters.
@@ -89,9 +89,11 @@ internal static class Program
             }
             else
             {
-                // filtered: sum CPU% across matching processes; core ~= sum capped at 100
+                // filtered: sum CPU% across matching processes;
+                // core ~= worst single-core saturation those could induce
+                // ≈ sumCPU * logical_cores, capped at 100.
                 cpuPercent  = await SampleFilteredCpuPercentAsync(sample, _procFilters);
-                corePercent = Math.Clamp(cpuPercent, 0, 100);
+                corePercent = Math.Min(100.0, cpuPercent * Math.Max(1, Environment.ProcessorCount)); // <-- only changed line
             }
 
             var (memTotalBytes, memAvailBytes) = GetSystemMemoryBytes();
