@@ -8,6 +8,22 @@ Serves identical CSV-formatted performance data via a simple HTTP server.
 
 ---
 
+## ✨ What’s new
+- **Launch arg `--procs`** to filter **CPU%**/**core%** to specific apps**.
+
+**Windows (PowerShell):**
+```powershell
+# IMPORTANT: quote the list because semicolons separate commands in PowerShell
+.\PerfMonDotNet9.exe --procs 'Resonite;Renderite.Host;Renderite.Renderer'
+```
+
+**Linux (Resonite runs as dotnet Resonite.dll):**
+```bash
+./PerfMonDotNet9 --procs 'Resonite.dll'
+```
+
+---
+
 ## 🧩 Features
 
 - 1 : 1 data format match with the Python version:
@@ -71,12 +87,12 @@ Or run your built binary directly:
 ```
 
 Which corresponds to:
-- Overall CPU %  
-- Max single-core %  
+- Overall CPU %
+- Max single-core %
 - Total RAM (B)  
 - Available RAM (B)  
-- Total bytes sent/received since start  
-- Current upload/download B/s  
+- Total bytes sent/received since start (system)  
+- Current upload/download B/s (system)  
 
 ---
 
@@ -99,6 +115,11 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
+**Filter CPU/Core to Resonite only (optional):**
+```ini
+ExecStart=/home/steam/.steam/steam/steamapps/common/Resonite/Headless/PerfMonDotNet9 --procs 'Resonite.dll'
+```
+
 Enable & start:
 ```bash
 sudo systemctl enable perfmon.service
@@ -109,10 +130,10 @@ sudo systemctl start perfmon.service
 
 ## 🧠 Notes
 
-- Identical behavior to Python `psutil` version.  
-- Greatly reduced CPU overhead.  
+- Identical CSV and endpoint as the Python `psutil` version (`/perf-stats`).  
+- `--procs` only affects CPU and core load; memory and network stay system-wide for portability.  
 - Automatically detects Windows/Linux counters.  
-- Can easily be queried from Resonite’s built-in WebRequest node.
+- Can be queried from Resonite’s built-in WebRequest node.
 
 ---
 
