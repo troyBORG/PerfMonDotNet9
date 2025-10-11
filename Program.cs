@@ -93,7 +93,7 @@ internal static class Program
                 // core ~= worst single-core saturation those could induce
                 // ≈ sumCPU * logical_cores, capped at 100.
                 cpuPercent  = await SampleFilteredCpuPercentAsync(sample, _procFilters);
-                corePercent = Math.Min(100.0, cpuPercent * Math.Max(1, Environment.ProcessorCount)); // <-- only changed line
+                corePercent = Math.Clamp(cpuPercent, 0, 100);
             }
 
             var (memTotalBytes, memAvailBytes) = GetSystemMemoryBytes();
